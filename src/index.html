@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>カタカナカタナ</title>
+<style>
+  body {
+    font-family: "Noto Sans JP", sans-serif;
+    background: #111;
+    color: #eee;
+    text-align: center;
+    padding-top: 80px;
+    overflow: hidden;
+  }
+  #line {
+    font-size: 2em;
+    margin: 30px auto;
+    width: 80%;
+  }
+  .highlight {
+    color: #0f0;
+    text-shadow: 0 0 10px #0f0;
+  }
+  #input {
+    font-size: 1.5em;
+    padding: 5px;
+    width: 50%;
+    text-align: center;
+    border: 2px solid #0f0;
+    background: #000;
+    color: #0f0;
+  }
+  #healthBar {
+    width: 300px;
+    height: 20px;
+    border: 2px solid #f00;
+    margin: 20px auto;
+    background: #300;
+  }
+  #healthFill {
+    height: 100%;
+    width: 100%;
+    background: #f00;
+    transition: width 0.2s;
+  }
+  #controls {
+    margin-top: 20px;
+  }
+  .slash {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 4px;
+    height: 200px;
+    background: linear-gradient(to bottom, rgba(0,255,0,0.8), transparent);
+    transform-origin: center center;
+    pointer-events: none;
+    opacity: 0;
+    animation: slashAnim 0.5s ease-out forwards;
+  }
+  @keyframes slashAnim {
+    0% {
+      transform: translate(-50%, -50%) rotate(-45deg) scaleY(0.5);
+      opacity: 1;
+    }
+    50% {
+      transform: translate(-50%, -50%) rotate(-45deg) scaleY(1.5);
+      opacity: 1;
+      box-shadow: 0 0 20px #0f0;
+    }
+    100% {
+      transform: translate(-50%, -50%) rotate(-45deg) scaleY(2.5);
+      opacity: 0;
+    }
+  }
+</style>
+</head>
+<body>
+  <h1>⚔️ カタカナカタナ ⚔️</h1>
+  <h2>by slashie and chatgpt</h1>
+  <div id="healthBar"><div id="healthFill"></div></div>
+  <div id="line">Loading lyrics...</div>
+  <input id="input" placeholder="" disabled />
+  <div id="controls">
+    <audio id="audio" src="song.mp3" controls></audio>
+  </div>
+
+<script>
+// ----------- LRC PARSER ------------
+async function loadLRC(filename = "lyrics.lrc") {
+  const res = await fetch(filename);
+  if (!res.ok) {
+    console.error("Could not load LRC:", filename);
+    return [];
+  }
+  const text = await res.text();
+  const lines = [];
+  const regex = /\[(\d+):(\d+(?:\.\d+)?)\](.*)/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const minutes = parseInt(match[1], 10);
+    const seconds = parseFloat(match[2]);
+    const time = minutes * 60 + seconds;
+    const content = match[3].trim();
+      const targets = [...content.matchAll(/<([^>]+)>/g)].map(m => m[1]);
+    lines.push({ time, text: content, targets });
+  }
+
+  // Calculate each line’s duration (window)
+  for (let i = 0; i < lines.length; i++) {
+    const curr = lines[i];
+    const next = lines[i + 1];
+    curr.window = next ? next.time - curr.time : 5.0; // fallback for last line
+  }
+  return lines;
+}
+
+// ----------- GAME LOGIC ------------
+const lineEl = document.getElementById("line");
+const inputEl = document.getElementById("input");
+const audio = document.getElementById("audio");
+const healthFill = document.getElementById("healthFill");
+
+let lines = [];
+let index = 0;
+let health = 200;
+let activeLine = null;
+let missed = false;
+let targetIndex = 0;
+
+function renderLine(lineObj) {
+  const html = lineObj.text.replace(/<([^>]+)>/g, '<span class="highlight">$1</span>');
+  lineEl.innerHTML = html;
+  inputEl.value = "";
+  inputEl.disabled = false;
+  inputEl.focus();
+  activeLine = { ...lineObj };
+  targetIndex = 0;
+  missed = false;
+}
+
+function updateHighlight() {
+  // dim already cleared words
+  let text = activeLine.text;
+  const cleared = activeLine.targets.slice(0, targetIndex);
+  for (const word of cleared) {
+    text = text.replace(`<${word}>`, `<span style="color:#555;">${word}</span>`);
+  }
+  const remaining = activeLine.targets[targetIndex];
+  if (remaining) {
+    text = text.replace(`<${remaining}>`, `<span class="highlight">${remaining}</span>`);
+  }
+  lineEl.innerHTML = text;
+}
+
+function damage() {
+  if (missed) return;
+  missed = true;
+  health -= 25;
+  if (health < 0) health = 0;
+  healthFill.style.width = (health/2) + "%";
+  if (health <= 0) {
+    lineEl.textContent = "💀 You failed...";
+    inputEl.disabled = true;
+    audio.pause();
+  }
+}
+
+function createSlash(target) {
+  if (!target) return;
+
+  const rect = target.getBoundingClientRect();
+  const slash = document.createElement("div");
+  slash.className = "slash";
+
+  // Randomized slash angle
+  const angle = -40 + Math.random() * 10;
+
+  // Style the slash
+  slash.style.position = "fixed";
+  slash.style.left = `${rect.left + rect.width / 2}px`;
+  slash.style.top = `${rect.top + rect.height / 2}px`;
+  slash.style.transform = `translate(-50%, -50%) rotate(${angle}deg) scaleY(0.5)`;
+  slash.style.pointerEvents = "none";
+  slash.style.zIndex = 9999;
+
+  document.body.appendChild(slash);
+  setTimeout(() => slash.remove(), 500);
+}
+
+inputEl.addEventListener("input", () => {
+  if (!activeLine) return;
+  const currentTarget = activeLine.targets[targetIndex];
+  if (!currentTarget) return;
+  const katakanaInput = romajiToKatakana(inputEl.value.trim());
+  inputEl.value = katakanaInput;
+
+  if (katakanaInput.toLowerCase() === currentTarget.toLowerCase()) {
+    createSlash(lineEl);
+    targetIndex++;
+    inputEl.value = "";
+    if (targetIndex >= activeLine.targets.length) {
+      //lineEl.innerHTML = "✨ Perfect!";
+      inputEl.disabled = true;
+      activeLine.cleared = true;
+    }
+    updateHighlight();
+  }
+});
+
+audio.addEventListener("timeupdate", () => {
+  const t = audio.currentTime;
+
+  // Check if the active line has expired
+  if (activeLine && activeLine.targets.length > 0 && t > activeLine.time + activeLine.window - 0.5) {
+    if (!activeLine.cleared) { // or whatever flag you use to mark "slashed"
+      damage();
+    }
+    activeLine = null;
+  }
+
+  // Move to the next line when it's time
+  if (index < lines.length && t >= lines[index].time - 0.5) {
+    renderLine(lines[index]); // sets activeLine = lines[index]
+    index++;
+  }
+
+  // End of song
+  if (index >= lines.length && !activeLine && t >= audio.duration - 0.5) {
+    lineEl.textContent = "🎉 You survived the song!";
+    inputEl.disabled = true;
+  }
+});
+
+audio.addEventListener("play", () => {
+  index = 0;
+  health = 200;
+  healthFill.style.width = "100%";
+  inputEl.value = "";
+  inputEl.disabled = true;
+  lineEl.textContent = "🎵 Starting...";
+});
+
+// ----------- INITIAL LOAD ------------
+loadLRC("worldIsMine.lrc").then(data => {
+  if (data.length === 0) {
+    lineEl.textContent = "No lyrics found (lyrics.lrc)";
+  } else {
+    lines = data;
+    lineEl.textContent = "Ready! Press ▶️ to start";
+  }
+});
+
+function romajiToKatakana(input) {
+  input = input.trim();
+  if (!input) return "";
+
+  // Find trailing romaji (we'll only translate that part)
+  const match = input.match(/([A-Za-z\-]+)$/);
+  if (!match) return input;
+
+  const romajiPart = match[1].toLowerCase();
+  const prefix = input.slice(0, input.length - romajiPart.length);
+
+  const table = {
+    a:"ア", i:"イ", u:"ウ", e:"エ", o:"オ",
+    ka:"カ", ki:"キ", ku:"ク", ke:"ケ", ko:"コ",
+    sa:"サ", shi:"シ", su:"ス", se:"セ", so:"ソ",
+    ta:"タ", chi:"チ", tsu:"ツ", te:"テ", to:"ト",
+    na:"ナ", ni:"ニ", nu:"ヌ", ne:"ネ", no:"ノ",
+    ha:"ハ", hi:"ヒ", fu:"フ", he:"ヘ", ho:"ホ",
+    ma:"マ", mi:"ミ", mu:"ム", me:"メ", mo:"モ",
+    ya:"ヤ", yu:"ユ", yo:"ヨ",
+    ra:"ラ", ri:"リ", ru:"ル", re:"レ", ro:"ロ",
+    wa:"ワ", wo:"ヲ", nn:"ン",
+    ga:"ガ", gi:"ギ", gu:"グ", ge:"ゲ", go:"ゴ",
+    za:"ザ", ji:"ジ", zu:"ズ", ze:"ゼ", zo:"ゾ",
+    da:"ダ", de:"デ", do:"ド",
+    ba:"バ", bi:"ビ", bu:"ブ", be:"ベ", bo:"ボ",
+    pa:"パ", pi:"ピ", pu:"プ", pe:"ペ", po:"ポ",
+    kyo:"キョ", kyu:"キュ", kya:"キャ",
+    sho:"ショ", shu:"シュ", sha:"シャ",
+    cho:"チョ", chu:"チュ", cha:"チャ",
+    nyo:"ニョ", nyu:"ニュ", nya:"ニャ",
+    myo:"ミョ", myu:"ミュ", mya:"ミャ",
+    ryo:"リョ", ryu:"リュ", rya:"リャ",
+    gyo:"ギョ", gyu:"ギュ", gya:"ギャ",
+    byo:"ビョ", byu:"ビュ", bya:"ビャ",
+    pyo:"ピョ", pyu:"ピュ", pya:"ピャ",
+    '-':"ー"
+  };
+
+  let result = "";
+  let rest = romajiPart;
+
+  while (rest.length > 0) {
+    // Handle doubled consonants: e.g., "kka" → "ッカ"
+    if (/^(kk|ss|tt|pp|cc|mm|yy|rr|gg|bb|dd|zz)/.test(rest)) {
+      result += "ッ";
+      rest = rest.slice(1);
+      continue;
+    }
+
+    // Handle long vowels: e.g., "aa", "ii", "uu", "ee", "oo", "ou", "ei"
+    /*if (/^(aa|ii|uu|ee|oo|ou|ei)/.test(rest)) {
+      const vowel = rest[0];
+      const kana = table[vowel];
+      result += kana + "ー";
+      rest = rest.slice(2);
+      continue;
+    }*/
+
+    // Regular syllables
+    const matchKey = Object.keys(table)
+      .filter(k => rest.startsWith(k))
+      .sort((a, b) => b.length - a.length)[0];
+
+    if (matchKey) {
+      result += table[matchKey];
+      rest = rest.slice(matchKey.length);
+    } else {
+      // Unrecognized characters → copy as-is and stop
+      result += rest;
+      break;
+    }
+  }
+
+  return prefix + result;
+}
+
+</script>
+</body>
+</html>
